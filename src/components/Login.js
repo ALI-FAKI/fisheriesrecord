@@ -57,7 +57,7 @@ const Login = ({ onLogin }) => {
     <div className="login-container">
       <div className="login-card">
         <div className="login-header">
-          <h1>🐟 Smart Fisheries System</h1>
+          <h1>Smart Fisheries System</h1>
           <p>{isLogin ? 'Login to your account' : 'Create new account'}</p>
         </div>
 
