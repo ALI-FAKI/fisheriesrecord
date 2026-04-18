@@ -8,7 +8,7 @@ const Login = ({ onLogin }) => {
     email: '',
     password: '',
     full_name: '',
-    role: 'individual',
+    role: 'worker',  // Changed default from 'individual' to 'worker'
     organization_name: ''
   });
   const [loading, setLoading] = useState(false);
@@ -105,14 +105,12 @@ const Login = ({ onLogin }) => {
               <div className="form-group">
                 <label>Account Type</label>
                 <select name="role" value={formData.role} onChange={handleChange}>
-                  <option value="individual">Individual Fisher</option>
-                  <option value="worker">Organization Worker</option>
-                  <option value="manager">Organization Manager</option>
+                  <option value="worker">Worker</option>
                   <option value="admin">Organization Admin</option>
                 </select>
               </div>
 
-              {(formData.role === 'admin' || formData.role === 'manager') && (
+              {formData.role === 'admin' && (
                 <div className="form-group">
                   <label>Organization Name</label>
                   <input
