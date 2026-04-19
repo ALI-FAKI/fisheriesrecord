@@ -95,10 +95,10 @@ export const addCatchRecord = async (data) => {
   }
 };
 
-export const getCatches = async (page = 1, perPage = 50) => {
+export const getCatches = async (page = 1, perPage = 50, filters = {}) => {
   try {
     const response = await api.get('/catches', {
-      params: { page, per_page: perPage },
+      params: { page, per_page: perPage, ...filters },
     });
     return response.data;
   } catch (error) {
@@ -301,6 +301,7 @@ export const getAdminDashboardSummary = async () => {
 };
 
 // ==================== ENVIRONMENTAL DATA ====================
+
 export const getEnvironmentalData = async () => {
   try {
     const response = await api.get('/environmental-data');
@@ -310,6 +311,41 @@ export const getEnvironmentalData = async () => {
     return { data: [] };
   }
 };
+
+// ==================== ANALYSIS ENDPOINTS ====================
+
+export const getAnalysisStats = async () => {
+  try {
+    const response = await api.get('/analysis/stats');
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || { error: error.message };
+  }
+};
+
+export const downloadData = async (format, filters = {}) => {
+  try {
+    const params = new URLSearchParams(filters);
+    const response = await api.get(`/analysis/download/${format}?${params.toString()}`, {
+      responseType: 'blob'
+    });
+    return response;
+  } catch (error) {
+    throw error.response?.data || { error: error.message };
+  }
+};
+
+export const generateReport = async (reportConfig) => {
+  try {
+    const response = await api.post('/analysis/generate-report', reportConfig, {
+      responseType: 'blob'
+    });
+    return response;
+  } catch (error) {
+    throw error.response?.data || { error: error.message };
+  }
+};
+
 // ==================== DATA QUALITY ENDPOINT ====================
 
 export const getDataQuality = async () => {
