@@ -300,6 +300,16 @@ export const getAdminDashboardSummary = async () => {
   }
 };
 
+// ==================== ENVIRONMENTAL DATA ====================
+export const getEnvironmentalData = async () => {
+  try {
+    const response = await api.get('/environmental-data');
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching environmental data:', error);
+    return { data: [] };
+  }
+};
 // ==================== DATA QUALITY ENDPOINT ====================
 
 export const getDataQuality = async () => {
