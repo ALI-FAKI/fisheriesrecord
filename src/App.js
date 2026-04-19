@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import Login from './components/Login';
-import OfflineDataEntry from './components/OfflineDataEntry';  // Change this import
+import OfflineDataEntry from './components/OfflineDataEntry';
 import Dashboard from './components/Dashboard';
 import MLPredictor from './components/MLPredictor';
 import TimeSeriesPredictor from './components/TimeSeriesPredictor';
 import OrganizationDashboard from './components/OrganizationDashboard';
+import Analysis from './components/Analysis';
 import './App.css';
 
 function App() {
@@ -113,6 +114,12 @@ function App() {
             >
               📈 Time Series
             </button>
+            <button 
+              className={activeTab === 'analysis' ? 'active' : ''} 
+              onClick={() => setActiveTab('analysis')}
+            >
+              📊 Analysis
+            </button>
           </>
         )}
         
@@ -142,6 +149,12 @@ function App() {
             >
               📈 Time Series
             </button>
+            <button 
+              className={activeTab === 'analysis' ? 'active' : ''} 
+              onClick={() => setActiveTab('analysis')}
+            >
+              📊 Analysis
+            </button>
           </>
         )}
       </nav>
@@ -152,6 +165,7 @@ function App() {
         {activeTab === 'ml' && <MLPredictor />}
         {activeTab === 'timeseries' && <TimeSeriesPredictor />}
         {activeTab === 'org-dashboard' && isAdmin && <OrganizationDashboard />}
+        {activeTab === 'analysis' && <Analysis />}
       </main>
     </div>
   );
