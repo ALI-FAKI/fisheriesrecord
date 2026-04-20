@@ -1,10 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { predictCatch, trainModel, getEnvironmentalAnalysis, getModelStatus } from '../api';
-import axios from 'axios';
+import { predictCatch, trainModel, getEnvironmentalAnalysis, getModelStatus, getLocations, getCatches } from '../api';
 import './MLPredictor.css';
-
-// Move API_URL outside the component since it's a static constant
-const API_URL = 'http://localhost:5000';
 
 const MLPredictor = () => {
   const [formData, setFormData] = useState({
@@ -21,6 +17,10 @@ const MLPredictor = () => {
   const [modelStatus, setModelStatus] = useState(null);
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState('');
+  const [predictionsByLocation, setPredictionsByLocation] = useState([]);
+  const [predictingAll, setPredictingAll] = useState(false);
+  const [viewMode, setViewMode] = useState('single'); // 'single' or 'all'
+  
   const [useRealWeather, setUseRealWeather] = useState(true);
   const [fetchingWeather, setFetchingWeather] = useState(false);
   const [weatherSource, setWeatherSource] = useState('');
@@ -31,38 +31,35 @@ const MLPredictor = () => {
     wind_speed: null
   });
 
-  // Define fetchRealWeather with useCallback so it can be used as a dependency
+  // Fetch real weather for a specific location
   const fetchRealWeather = useCallback(async (location) => {
     if (!location || !location.latitude || !location.longitude) {
       console.log('No coordinates for this location');
-      return;
+      return null;
     }
 
-    setFetchingWeather(true);
     try {
       const today = new Date().toISOString().split('T')[0];
-      const response = await axios.post(`${API_URL}/get-weather-for-location`, {
+      const { getWeatherForLocation } = await import('../api');
+      const response = await getWeatherForLocation({
         latitude: location.latitude,
         longitude: location.longitude,
         date: today
       });
 
-      if (response.data) {
-        setFormData(prev => ({
-          ...prev,
-          temperature: response.data.temperature,
-          rainfall: response.data.rainfall,
-          wind_speed: response.data.wind_speed,
-          month: new Date().getMonth() + 1
-        }));
-        setWeatherSource(`Real weather from ${location.name} (${response.data.source})`);
+      if (response) {
+        return {
+          temperature: response.temperature,
+          rainfall: response.rainfall,
+          wind_speed: response.wind_speed,
+          source: response.source
+        };
       }
     } catch (error) {
       console.error('Failed to fetch real weather:', error);
-      setWeatherSource('Using default values');
-    } finally {
-      setFetchingWeather(false);
+      return null;
     }
+    return null;
   }, []);
 
   const loadModelStatus = useCallback(async () => {
@@ -76,21 +73,31 @@ const MLPredictor = () => {
 
   const loadLocations = useCallback(async () => {
     try {
-      const response = await axios.get(`${API_URL}/get-locations`);
-      setLocations(response.data.locations || []);
-      if (response.data.locations && response.data.locations.length > 0) {
-        setSelectedLocation(response.data.locations[0].name);
-        fetchRealWeather(response.data.locations[0]);
+      const response = await getLocations();
+      setLocations(response.locations || []);
+      if (response.locations && response.locations.length > 0) {
+        setSelectedLocation(response.locations[0].name);
+        // Fetch weather for the first location
+        const weather = await fetchRealWeather(response.locations[0]);
+        if (weather && useRealWeather) {
+          setFormData(prev => ({
+            ...prev,
+            temperature: weather.temperature,
+            rainfall: weather.rainfall,
+            wind_speed: weather.wind_speed
+          }));
+          setWeatherSource(`Real weather from ${response.locations[0].name} (${weather.source})`);
+        }
       }
     } catch (error) {
       console.error('Failed to load locations:', error);
     }
-  }, [fetchRealWeather]);
+  }, [fetchRealWeather, useRealWeather]);
 
   const loadHistoricalData = useCallback(async () => {
     try {
-      const response = await axios.get(`${API_URL}/catches`);
-      const records = response.data.data || [];
+      const response = await getCatches(1, 100);
+      const records = response.data || [];
       
       const recordsWithWeather = records.filter(r => 
         r.temperature && r.temperature !== null && 
@@ -120,7 +127,6 @@ const MLPredictor = () => {
     }
   }, []);
 
-  // useEffect now includes all functions in the dependency array
   useEffect(() => {
     loadModelStatus();
     loadLocations();
@@ -133,8 +139,85 @@ const MLPredictor = () => {
     
     const location = locations.find(l => l.name === locationName);
     if (location && useRealWeather) {
-      await fetchRealWeather(location);
+      setFetchingWeather(true);
+      const weather = await fetchRealWeather(location);
+      if (weather) {
+        setFormData(prev => ({
+          ...prev,
+          temperature: weather.temperature,
+          rainfall: weather.rainfall,
+          wind_speed: weather.wind_speed
+        }));
+        setWeatherSource(`Real weather from ${location.name} (${weather.source})`);
+      }
+      setFetchingWeather(false);
     }
+  };
+
+  const handlePredictAllLocations = async () => {
+    setPredictingAll(true);
+    setPredictionsByLocation([]);
+    
+    const results = [];
+    
+    for (const location of locations) {
+      try {
+        let temp, rain, wind;
+        
+        if (useRealWeather && location.latitude && location.longitude) {
+          const weather = await fetchRealWeather(location);
+          if (weather) {
+            temp = weather.temperature;
+            rain = weather.rainfall;
+            wind = weather.wind_speed;
+          } else {
+            temp = formData.temperature;
+            rain = formData.rainfall;
+            wind = formData.wind_speed;
+          }
+        } else {
+          temp = formData.temperature;
+          rain = formData.rainfall;
+          wind = formData.wind_speed;
+        }
+        
+        const result = await predictCatch({
+          temperature: temp,
+          rainfall: rain,
+          wind_speed: wind,
+          effort_hours: formData.effort_hours,
+          month: formData.month
+        });
+        
+        results.push({
+          location: location.name,
+          predicted_catch_kg: result.predicted_catch_kg,
+          cpue: (result.predicted_catch_kg / formData.effort_hours).toFixed(1),
+          temperature: temp,
+          rainfall: rain,
+          wind_speed: wind,
+          record_count: location.record_count,
+          total_catch: location.total_catch || 0,
+          confidence: result.confidence_score,
+          latitude: location.latitude,
+          longitude: location.longitude
+        });
+      } catch (error) {
+        console.error(`Failed to predict for ${location.name}:`, error);
+        results.push({
+          location: location.name,
+          predicted_catch_kg: 0,
+          cpue: 0,
+          error: true,
+          record_count: location.record_count
+        });
+      }
+    }
+    
+    // Sort by predicted catch (highest first)
+    results.sort((a, b) => b.predicted_catch_kg - a.predicted_catch_kg);
+    setPredictionsByLocation(results);
+    setPredictingAll(false);
   };
 
   const handleToggleWeatherSource = () => {
@@ -143,7 +226,16 @@ const MLPredictor = () => {
     if (nextValue && selectedLocation) {
       const location = locations.find(l => l.name === selectedLocation);
       if (location) {
-        fetchRealWeather(location);
+        fetchRealWeather(location).then(weather => {
+          if (weather) {
+            setFormData(prev => ({
+              ...prev,
+              temperature: weather.temperature,
+              rainfall: weather.rainfall,
+              wind_speed: weather.wind_speed
+            }));
+          }
+        });
       }
     }
   };
@@ -280,7 +372,6 @@ const MLPredictor = () => {
       assessments.push({ good: false, text: `🌡️ Temperature ${temperature}°C differs from optimal (${optimalConditions.temperature}°C)` });
     }
     
-    // FIXED: Now using 'rainDiff' instead of raw 'rainfall' for the score logic
     const rainDiff = Math.abs(rainfall - optimalConditions.rainfall);
     if (rainDiff <= 2) {
       score += 2;
@@ -315,268 +406,331 @@ const MLPredictor = () => {
   const weatherAssessment = getWeatherAssessment();
   const currentCPUE = getCPUE();
 
+  // Find best location from predictions
+  const bestLocation = predictionsByLocation.length > 0 ? predictionsByLocation[0] : null;
+
   return (
     <div className="ml-predictor">
       <h2>🤖 AI Catch Predictor</h2>
       <p>Predict fish catch based on REAL environmental conditions from your fishing locations</p>
 
-      <div className="weather-source-bar">
-        <div className="weather-toggle">
-          <label className="switch">
-            <input 
-              type="checkbox" 
-              checked={useRealWeather} 
-              onChange={handleToggleWeatherSource} 
-            />
-            <span className="slider round"></span>
-          </label>
-          <span>Use Real Weather Data</span>
-        </div>
-        {weatherSource && (
-          <div className="weather-source-info">
-            🌐 {weatherSource}
-            {fetchingWeather && <span className="fetching"> (Updating...)</span>}
-          </div>
-        )}
+      {/* View Mode Toggle */}
+      <div className="view-mode-toggle">
+        <button 
+          className={`mode-btn ${viewMode === 'single' ? 'active' : ''}`}
+          onClick={() => setViewMode('single')}
+        >
+          📍 Single Location
+        </button>
+        <button 
+          className={`mode-btn ${viewMode === 'all' ? 'active' : ''}`}
+          onClick={() => setViewMode('all')}
+        >
+          🌍 All Locations
+        </button>
       </div>
 
-      {locations.length > 0 && (
-        <div className="location-selector">
-          <label>📍 Select Fishing Location:</label>
-          <select value={selectedLocation} onChange={handleLocationChange}>
-            {locations.map(loc => (
-              <option key={loc.name} value={loc.name}>
-                {loc.name} ({loc.record_count} records) 
-                {loc.latitude ? ' 📍' : ' ❌ No coordinates'}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {optimalConditions.temperature && (
-        <div className="optimal-conditions">
-          <h4>📊 Best Conditions from Your Successful Catches</h4>
-          <div className="optimal-grid">
-            <div className="optimal-item">
-              <span className="optimal-icon">🌡️</span>
-              <span className="optimal-label">Best Temp:</span>
-              <span className="optimal-value">{optimalConditions.temperature}°C</span>
+      {viewMode === 'single' ? (
+        // Single Location View
+        <>
+          <div className="weather-source-bar">
+            <div className="weather-toggle">
+              <label className="switch">
+                <input 
+                  type="checkbox" 
+                  checked={useRealWeather} 
+                  onChange={handleToggleWeatherSource} 
+                />
+                <span className="slider round"></span>
+              </label>
+              <span>Use Real Weather Data</span>
             </div>
-            <div className="optimal-item">
-              <span className="optimal-icon">💧</span>
-              <span className="optimal-label">Best Rain:</span>
-              <span className="optimal-value">{optimalConditions.rainfall}mm</span>
-            </div>
-            <div className="optimal-item">
-              <span className="optimal-icon">💨</span>
-              <span className="optimal-label">Best Wind:</span>
-              <span className="optimal-value">{optimalConditions.wind_speed}km/h</span>
-            </div>
+            {weatherSource && (
+              <div className="weather-source-info">
+                🌐 {weatherSource}
+                {fetchingWeather && <span className="fetching"> (Updating...)</span>}
+              </div>
+            )}
           </div>
-          <p className="optimal-note">Based on your top {historicalData.length} fishing records</p>
-        </div>
-      )}
 
-      {modelStatus && (
-        <div className="model-status">
-          <div className={`status-badge ${modelStatus.model_trained ? 'trained' : 'untrained'}`}>
-            {modelStatus.model_trained ? '✅ Model Trained' : '⚠️ Model Not Trained'}
-          </div>
-          {modelStatus.model_trained && modelStatus.metrics && (
-            <div className="status-metrics">
-              <span>📊 R² Score: {modelStatus.metrics.train_r2}</span>
-              <span>📈 MAE: {modelStatus.metrics.train_mae} kg</span>
-              <span>🎯 Samples: {modelStatus.metrics.training_samples}</span>
+          {locations.length > 0 && (
+            <div className="location-selector">
+              <label>📍 Select Fishing Location:</label>
+              <select value={selectedLocation} onChange={handleLocationChange}>
+                {locations.map(loc => (
+                  <option key={loc.name} value={loc.name}>
+                    {loc.name} ({loc.record_count} records) 
+                    {loc.latitude ? ' 📍' : ' ❌ No coordinates'}
+                  </option>
+                ))}
+              </select>
             </div>
           )}
-        </div>
-      )}
 
-      <div className="predictor-grid">
-        <div className="input-group">
-          <label>🌡️ Temperature (°C)</label>
-          <input
-            type="range"
-            name="temperature"
-            min="0"
-            max="40"
-            step="0.5"
-            value={formData.temperature}
-            onChange={handleChange}
-            disabled={useRealWeather && fetchingWeather}
-          />
-          <div className="input-value">{formData.temperature}°C</div>
           {optimalConditions.temperature && (
-            <div className="input-hint">Best from data: {optimalConditions.temperature}°C</div>
-          )}
-        </div>
-
-        <div className="input-group">
-          <label>💧 Rainfall (mm)</label>
-          <input
-            type="range"
-            name="rainfall"
-            min="0"
-            max="100"
-            step="1"
-            value={formData.rainfall}
-            onChange={handleChange}
-            disabled={useRealWeather && fetchingWeather}
-          />
-          <div className="input-value">{formData.rainfall} mm</div>
-          {optimalConditions.rainfall && (
-            <div className="input-hint">Best from data: {optimalConditions.rainfall}mm</div>
-          )}
-        </div>
-
-        <div className="input-group">
-          <label>💨 Wind Speed (km/h)</label>
-          <input
-            type="range"
-            name="wind_speed"
-            min="0"
-            max="50"
-            step="1"
-            value={formData.wind_speed}
-            onChange={handleChange}
-            disabled={useRealWeather && fetchingWeather}
-          />
-          <div className="input-value">{formData.wind_speed} km/h</div>
-          {optimalConditions.wind_speed && (
-            <div className="input-hint">Best from data: {optimalConditions.wind_speed}km/h</div>
-          )}
-        </div>
-
-        <div className="input-group">
-          <label>⏱️ Effort (hours)</label>
-          <input
-            type="range"
-            name="effort_hours"
-            min="1"
-            max="12"
-            step="0.5"
-            value={formData.effort_hours}
-            onChange={handleChange}
-          />
-          <div className="input-value">{formData.effort_hours} hrs</div>
-        </div>
-
-        <div className="input-group">
-          <label>📅 Month</label>
-          <select name="month" value={formData.month} onChange={handleChange}>
-            <option value={1}>January</option>
-            <option value={2}>February</option>
-            <option value={3}>March</option>
-            <option value={4}>April</option>
-            <option value={5}>May</option>
-            <option value={6}>June</option>
-            <option value={7}>July</option>
-            <option value={8}>August</option>
-            <option value={9}>September</option>
-            <option value={10}>October</option>
-            <option value={11}>November</option>
-            <option value={12}>December</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="action-buttons">
-        <button onClick={handlePredict} disabled={loading} className="btn-predict">
-          {loading ? '🤔 Predicting...' : '🎯 Predict Catch'}
-        </button>
-        <button onClick={handleTrain} disabled={training || !modelStatus?.training_ready} className="btn-train">
-          {training ? '🧠 Training...' : '🤖 Train Model'}
-        </button>
-        <button onClick={handleAnalysis} className="btn-analyze">
-          {analysis ? '📊 View Analysis' : '📊 Environmental Analysis'}
-        </button>
-      </div>
-
-      {prediction && (
-        <div className="prediction-result">
-          <h3>🎯 Prediction Result</h3>
-          
-          <div className="result-value">
-            {prediction.predicted_catch_kg} <span>kg</span>
-          </div>
-          
-          <div className="result-cpue">
-            <strong>Catch Per Unit Effort (CPUE):</strong> {currentCPUE} kg/hour
-          </div>
-          
-          {interpretation && (
-            <div className="interpretation-badge" style={{ backgroundColor: interpretation.color + '20', borderColor: interpretation.color }}>
-              <span className="interpretation-icon">{interpretation.icon}</span>
-              <div className="interpretation-content">
-                <div className="interpretation-level" style={{ color: interpretation.color }}>
-                  {interpretation.level} Fishing Conditions
+            <div className="optimal-conditions">
+              <h4>📊 Best Conditions from Your Successful Catches</h4>
+              <div className="optimal-grid">
+                <div className="optimal-item">
+                  <span className="optimal-icon">🌡️</span>
+                  <span className="optimal-label">Best Temp:</span>
+                  <span className="optimal-value">{optimalConditions.temperature}°C</span>
                 </div>
-                <div className="interpretation-message">{interpretation.message}</div>
-                <div className="interpretation-recommendation">💡 {interpretation.recommendation}</div>
+                <div className="optimal-item">
+                  <span className="optimal-icon">💧</span>
+                  <span className="optimal-label">Best Rain:</span>
+                  <span className="optimal-value">{optimalConditions.rainfall}mm</span>
+                </div>
+                <div className="optimal-item">
+                  <span className="optimal-icon">💨</span>
+                  <span className="optimal-label">Best Wind:</span>
+                  <span className="optimal-value">{optimalConditions.wind_speed}km/h</span>
+                </div>
+              </div>
+              <p className="optimal-note">Based on your top {historicalData.length} fishing records</p>
+            </div>
+          )}
+
+          {modelStatus && (
+            <div className="model-status">
+              <div className={`status-badge ${modelStatus.model_trained ? 'trained' : 'untrained'}`}>
+                {modelStatus.model_trained ? '✅ Model Trained' : '⚠️ Model Not Trained'}
+              </div>
+              {modelStatus.model_trained && modelStatus.metrics && (
+                <div className="status-metrics">
+                  <span>📊 R² Score: {modelStatus.metrics.train_r2}</span>
+                  <span>📈 MAE: {modelStatus.metrics.train_mae} kg</span>
+                  <span>🎯 Samples: {modelStatus.metrics.training_samples}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="predictor-grid">
+            <div className="input-group">
+              <label>🌡️ Temperature (°C)</label>
+              <input
+                type="range"
+                name="temperature"
+                min="0"
+                max="40"
+                step="0.5"
+                value={formData.temperature}
+                onChange={handleChange}
+                disabled={useRealWeather && fetchingWeather}
+              />
+              <div className="input-value">{formData.temperature}°C</div>
+              {optimalConditions.temperature && (
+                <div className="input-hint">Best from data: {optimalConditions.temperature}°C</div>
+              )}
+            </div>
+
+            <div className="input-group">
+              <label>💧 Rainfall (mm)</label>
+              <input
+                type="range"
+                name="rainfall"
+                min="0"
+                max="100"
+                step="1"
+                value={formData.rainfall}
+                onChange={handleChange}
+                disabled={useRealWeather && fetchingWeather}
+              />
+              <div className="input-value">{formData.rainfall} mm</div>
+              {optimalConditions.rainfall && (
+                <div className="input-hint">Best from data: {optimalConditions.rainfall}mm</div>
+              )}
+            </div>
+
+            <div className="input-group">
+              <label>💨 Wind Speed (km/h)</label>
+              <input
+                type="range"
+                name="wind_speed"
+                min="0"
+                max="50"
+                step="1"
+                value={formData.wind_speed}
+                onChange={handleChange}
+                disabled={useRealWeather && fetchingWeather}
+              />
+              <div className="input-value">{formData.wind_speed} km/h</div>
+              {optimalConditions.wind_speed && (
+                <div className="input-hint">Best from data: {optimalConditions.wind_speed}km/h</div>
+              )}
+            </div>
+
+            <div className="input-group">
+              <label>⏱️ Effort (hours)</label>
+              <input
+                type="range"
+                name="effort_hours"
+                min="1"
+                max="12"
+                step="0.5"
+                value={formData.effort_hours}
+                onChange={handleChange}
+              />
+              <div className="input-value">{formData.effort_hours} hrs</div>
+            </div>
+
+            <div className="input-group">
+              <label>📅 Month</label>
+              <select name="month" value={formData.month} onChange={handleChange}>
+                <option value={1}>January</option>
+                <option value={2}>February</option>
+                <option value={3}>March</option>
+                <option value={4}>April</option>
+                <option value={5}>May</option>
+                <option value={6}>June</option>
+                <option value={7}>July</option>
+                <option value={8}>August</option>
+                <option value={9}>September</option>
+                <option value={10}>October</option>
+                <option value={11}>November</option>
+                <option value={12}>December</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="action-buttons">
+            <button onClick={handlePredict} disabled={loading} className="btn-predict">
+              {loading ? '🤔 Predicting...' : '🎯 Predict Catch'}
+            </button>
+            <button onClick={handleTrain} disabled={training || !modelStatus?.training_ready} className="btn-train">
+              {training ? '🧠 Training...' : '🤖 Train Model'}
+            </button>
+            <button onClick={handleAnalysis} className="btn-analyze">
+              {analysis ? '📊 View Analysis' : '📊 Environmental Analysis'}
+            </button>
+          </div>
+
+          {prediction && (
+            <div className="prediction-result">
+              <h3>🎯 Prediction Result for {selectedLocation}</h3>
+              
+              <div className="result-value">
+                {prediction.predicted_catch_kg} <span>kg</span>
+              </div>
+              
+              <div className="result-cpue">
+                <strong>Catch Per Unit Effort (CPUE):</strong> {currentCPUE} kg/hour
+              </div>
+              
+              {interpretation && (
+                <div className="interpretation-badge" style={{ backgroundColor: interpretation.color + '20', borderColor: interpretation.color }}>
+                  <span className="interpretation-icon">{interpretation.icon}</span>
+                  <div className="interpretation-content">
+                    <div className="interpretation-level" style={{ color: interpretation.color }}>
+                      {interpretation.level} Fishing Conditions
+                    </div>
+                    <div className="interpretation-message">{interpretation.message}</div>
+                    <div className="interpretation-recommendation">💡 {interpretation.recommendation}</div>
+                  </div>
+                </div>
+              )}
+              
+              <div className="weather-assessment">
+                <h4>🌤️ Weather Assessment</h4>
+                <div className="weather-overall" style={{ color: weatherAssessment.overall.color }}>
+                  {weatherAssessment.overall.icon} {weatherAssessment.overall.text}
+                </div>
+                <div className="weather-details">
+                  {weatherAssessment.assessments.map((item, idx) => (
+                    <div key={idx} className={`weather-item ${item.good ? 'good' : 'bad'}`}>
+                      {item.good ? '✅' : '⚠️'} {item.text}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              
+              <div className="result-details">
+                <div className="detail-item">
+                  <span className="detail-label">Confidence:</span>
+                  <span className="detail-value">{(prediction.confidence_score * 100).toFixed(0)}%</span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">Model:</span>
+                  <span className="detail-value">{prediction.model_used === 'trained' ? 'Trained ML Model' : 'Heuristic Model'}</span>
+                </div>
               </div>
             </div>
           )}
-          
-          <div className="weather-assessment">
-            <h4>🌤️ Weather Assessment</h4>
-            <div className="weather-overall" style={{ color: weatherAssessment.overall.color }}>
-              {weatherAssessment.overall.icon} {weatherAssessment.overall.text}
-            </div>
-            <div className="weather-details">
-              {weatherAssessment.assessments.map((item, idx) => (
-                <div key={idx} className={`weather-item ${item.good ? 'good' : 'bad'}`}>
-                  {item.good ? '✅' : '⚠️'} {item.text}
-                </div>
-              ))}
-            </div>
+        </>
+      ) : (
+        // All Locations View
+        <div className="all-locations-view">
+          <div className="all-locations-header">
+            <h3>🌍 Predictions for All Locations</h3>
+            <p>Using current weather conditions for {locations.length} locations</p>
+            <button 
+              onClick={handlePredictAllLocations} 
+              disabled={predictingAll || locations.length === 0}
+              className="btn-predict-all"
+            >
+              {predictingAll ? '🔄 Predicting for all locations...' : '🔮 Predict All Locations'}
+            </button>
           </div>
-          
-          <div className="result-details">
-            <div className="detail-item">
-              <span className="detail-label">Confidence:</span>
-              <span className="detail-value">{(prediction.confidence_score * 100).toFixed(0)}%</span>
+
+          {predictionsByLocation.length > 0 && (
+            <div className="all-locations-results">
+              <div className="best-location-card">
+                <h4>🏆 Best Location to Fish</h4>
+                {bestLocation && (
+                  <div className="best-location-details">
+                    <div className="best-location-name">{bestLocation.location}</div>
+                    <div className="best-location-catch">{bestLocation.predicted_catch_kg} kg</div>
+                    <div className="best-location-cpue">CPUE: {bestLocation.cpue} kg/h</div>
+                    <div className="best-location-conditions">
+                      🌡️ {bestLocation.temperature}°C | 💧 {bestLocation.rainfall}mm | 💨 {bestLocation.wind_speed}km/h
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="locations-table-container">
+                <table className="locations-prediction-table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Location</th>
+                      <th>Predicted Catch (kg)</th>
+                      <th>CPUE (kg/h)</th>
+                      <th>Weather</th>
+                      <th>Records</th>
+                      <th>Confidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {predictionsByLocation.map((loc, index) => (
+                      <tr key={loc.location} className={index === 0 ? 'top-ranked' : ''}>
+                        <td className="rank">#{index + 1}</td>
+                        <td className="location-name">{loc.location}</td>
+                        <td className="catch-value">{loc.predicted_catch_kg} kg</td>
+                        <td className="cpue-value">{loc.cpue} kg/h</td>
+                        <td className="weather-details">
+                          🌡️{loc.temperature}° 💧{loc.rainfall}mm 💨{loc.wind_speed}km/h
+                        </td>
+                        <td className="record-count">{loc.record_count || 0}</td>
+                        <td className="confidence">{(loc.confidence * 100).toFixed(0)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
-            <div className="detail-item">
-              <span className="detail-label">Model:</span>
-              <span className="detail-value">{prediction.model_used === 'trained' ? 'Trained ML Model' : 'Heuristic Model'}</span>
+          )}
+
+          {predictionsByLocation.length === 0 && !predictingAll && (
+            <div className="no-predictions-message">
+              <p>Click "Predict All Locations" to see predictions for all your fishing spots.</p>
             </div>
-          </div>
-          
-          <div className="result-conditions">
-            <h4>📋 Input Conditions</h4>
-            <div className="conditions-grid">
-              <div className="condition">
-                <span className="condition-icon">🌡️</span>
-                <span className="condition-label">Temperature</span>
-                <span className="condition-value">{prediction.input_parameters.temperature}°C</span>
-              </div>
-              <div className="condition">
-                <span className="condition-icon">💧</span>
-                <span className="condition-label">Rainfall</span>
-                <span className="condition-value">{prediction.input_parameters.rainfall}mm</span>
-              </div>
-              <div className="condition">
-                <span className="condition-icon">💨</span>
-                <span className="condition-label">Wind Speed</span>
-                <span className="condition-value">{prediction.input_parameters.wind_speed}km/h</span>
-              </div>
-              <div className="condition">
-                <span className="condition-icon">⏱️</span>
-                <span className="condition-label">Effort</span>
-                <span className="condition-value">{prediction.input_parameters.effort_hours} hrs</span>
-              </div>
-              <div className="condition">
-                <span className="condition-icon">📅</span>
-                <span className="condition-label">Month</span>
-                <span className="condition-value">{prediction.input_parameters.month}</span>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       )}
 
-      {analysis && (
+      {analysis && viewMode === 'single' && (
         <div className="analysis-result">
           <h3>📈 Environmental Impact Analysis</h3>
           
