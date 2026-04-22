@@ -1,16 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { getLocations, predictByDate, predictTimeSeries, predictSpecificLocation } from '../api';
+import api from '../api';
 import './TimeSeriesPredictor.css';
 
 const TimeSeriesPredictor = () => {
-  const [predictionType, setPredictionType] = useState('date');
+  const [viewMode, setViewMode] = useState('all');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.toISOString().split('T')[0];
+  });
   const [effortHours, setEffortHours] = useState(4);
-  const [year, setYear] = useState(new Date().getFullYear());
-  const [startYear, setStartYear] = useState(new Date().getFullYear());
-  const [endYear, setEndYear] = useState(new Date().getFullYear() + 5);
   const [locations, setLocations] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState('');
   const [userRole, setUserRole] = useState(null);
@@ -18,129 +19,125 @@ const TimeSeriesPredictor = () => {
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
     setUserRole(user?.role);
-    
-    if (predictionType === 'location') {
-      loadLocations();
-    }
-    setResult(null);
-  }, [predictionType]);
+    loadLocations();
+  }, []);
 
   const loadLocations = async () => {
     try {
-      const response = await getLocations();
-      setLocations(response.locations || []);
-      if (response.locations && response.locations.length > 0) {
-        setSelectedLocation(response.locations[0].name);
+      const response = await api.get('/get-locations');
+      setLocations(response.data.locations || []);
+      if (response.data.locations && response.data.locations.length > 0) {
+        setSelectedLocation(response.data.locations[0].name);
       }
     } catch (error) {
       console.error('Failed to load locations:', error);
-      setLocations([]);
     }
   };
 
   const handlePredict = async () => {
     setLoading(true);
+    
     try {
-      let response;
-      
-      if (predictionType === 'date') {
-        response = await predictByDate({
+      if (viewMode === 'all') {
+        const allPredictions = [];
+        
+        for (const loc of locations) {
+          const response = await api.post('/predict-with-forecast', {
+            date: selectedDate,
+            location: loc.name,
+            effort_hours: effortHours
+          });
+          
+          allPredictions.push({
+            location: loc.name,
+            predicted_catch: response.data.predicted_catch_kg,
+            cpue: response.data.cpue,
+            confidence: response.data.confidence_score,
+            weather: response.data.forecast_weather,
+            trend: response.data.trend,
+            recommendation: response.data.recommendation
+          });
+        }
+        
+        allPredictions.sort((a, b) => b.predicted_catch - a.predicted_catch);
+        
+        setResult({
+          type: 'all',
+          predictions: allPredictions,
+          date: selectedDate
+        });
+        
+      } else {
+        const response = await api.post('/predict-with-forecast', {
           date: selectedDate,
+          location: selectedLocation,
           effort_hours: effortHours
         });
-        setResult(response);
-      } 
-      else if (predictionType === 'monthly') {
-        const selectedMonth = new Date(selectedDate).getMonth() + 1;
-        response = await predictTimeSeries({
-          type: 'monthly',
-          year: year,
-          highlight_month: selectedMonth,
-          effort_hours: effortHours
+        
+        setResult({
+          type: 'specific',
+          data: response.data,
+          date: selectedDate,
+          location: selectedLocation
         });
-        setResult(response);
-      } 
-      else if (predictionType === 'yearly') {
-        response = await predictTimeSeries({
-          type: 'yearly',
-          start_year: startYear,
-          end_year: endYear,
-          effort_hours: effortHours
-        });
-        setResult(response);
-      } 
-      else if (predictionType === 'location') {
-        response = await predictSpecificLocation({
-          location_name: selectedLocation,
-          month: new Date(selectedDate).getMonth() + 1,
-          effort_hours: effortHours
-        });
-        setResult(response);
       }
       
     } catch (error) {
       console.error('Prediction error:', error);
-      alert('Prediction failed: ' + (error.error || error.message));
+      alert('Prediction failed: ' + (error.response?.data?.error || error.message));
     } finally {
       setLoading(false);
     }
   };
 
-  // Get dynamic weather icon based on actual data thresholds
-  const getWeatherIcon = (condition, value) => {
-    if (!value && value !== 0) return '📊';
-    
-    if (condition === 'temp') {
-      if (value >= 20 && value <= 28) return '✅';
-      if (value < 15) return '❄️';
-      if (value > 30) return '🔥';
-      return '🌡️';
-    }
-    
-    if (condition === 'rain') {
-      if (value < 5) return '☀️';
-      if (value < 15) return '🌤️';
-      if (value < 30) return '☁️';
-      return '🌧️';
-    }
-    
-    if (condition === 'wind') {
-      if (value < 10) return '🍃';
-      if (value < 20) return '💨';
-      return '🌪️';
-    }
-    
-    return '📊';
-  };
-
-  const getSeasonFromMonth = (month) => {
-    if (month >= 3 && month <= 5) return 'Spring';
-    if (month >= 6 && month <= 8) return 'Summer';
-    if (month >= 9 && month <= 11) return 'Fall';
-    return 'Winter';
-  };
-
   return (
     <div className="time-series-predictor">
-      <h2>📈 Time-Series Catch Predictor</h2>
-      <p>Predict catch rates based on REAL historical data from your fishing records</p>
+      <h2>📈 Future Catch Predictor</h2>
+      <p>Predict future catches using weather forecast correlation</p>
 
-      {/* Role Indicator */}
       <div className="role-indicator">
         <span className={`role-badge ${userRole === 'admin' ? 'admin' : 'worker'}`}>
-          {userRole === 'admin' ? '👑 Admin View - Organization Data' : '🔧 Worker View - Your Data'}
+          {userRole === 'admin' ? '👑 Admin View' : '🔧 Worker View'}
         </span>
       </div>
 
-      <div className="prediction-controls">
-        <div className="control-group">
-          <label>Prediction Type:</label>
-          <select value={predictionType} onChange={(e) => setPredictionType(e.target.value)}>
-            <option value="date">📅 By Specific Date</option>
-            <option value="monthly">📊 Monthly Forecast</option>
-            <option value="yearly">📈 Yearly Trend</option>
-            <option value="location">🌍 By Location (from your data)</option>
+      <div className="view-mode-toggle">
+        <button 
+          className={`mode-btn ${viewMode === 'all' ? 'active' : ''}`}
+          onClick={() => setViewMode('all')}
+        >
+          🌍 All Locations
+        </button>
+        <button 
+          className={`mode-btn ${viewMode === 'specific' ? 'active' : ''}`}
+          onClick={() => setViewMode('specific')}
+        >
+          📍 Specific Location
+        </button>
+      </div>
+
+      {viewMode === 'specific' && locations.length > 0 && (
+        <div className="location-selector">
+          <label>Select Location:</label>
+          <select value={selectedLocation} onChange={(e) => setSelectedLocation(e.target.value)}>
+            {locations.map(loc => (
+              <option key={loc.name} value={loc.name}>
+                {loc.name} ({loc.record_count} records)
+              </option>
+            ))}
           </select>
+        </div>
+      )}
+
+      <div className="date-controls">
+        <div className="control-group">
+          <label>📅 Future Date:</label>
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            min={new Date(new Date().setDate(new Date().getDate() + 1)).toISOString().split('T')[0]}
+          />
         </div>
 
         <div className="control-group">
@@ -154,292 +151,82 @@ const TimeSeriesPredictor = () => {
             step="0.5"
           />
         </div>
-
-        {predictionType === 'date' && (
-          <div className="control-group">
-            <label>📅 Select Date:</label>
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-            />
-          </div>
-        )}
-
-        {predictionType === 'monthly' && (
-          <>
-            <div className="control-group">
-              <label>📅 Reference Date:</label>
-              <input
-                type="date"
-                value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
-              />
-            </div>
-            <div className="control-group">
-              <label>📆 Year:</label>
-              <input
-                type="number"
-                value={year}
-                onChange={(e) => setYear(parseInt(e.target.value))}
-                min="2020"
-                max="2030"
-              />
-            </div>
-          </>
-        )}
-
-        {predictionType === 'yearly' && (
-          <>
-            <div className="control-group">
-              <label>📅 Start Year:</label>
-              <input
-                type="number"
-                value={startYear}
-                onChange={(e) => setStartYear(parseInt(e.target.value))}
-                min="2000"
-                max="2030"
-              />
-            </div>
-            <div className="control-group">
-              <label>📅 End Year:</label>
-              <input
-                type="number"
-                value={endYear}
-                onChange={(e) => setEndYear(parseInt(e.target.value))}
-                min="2001"
-                max="2035"
-              />
-            </div>
-          </>
-        )}
-
-        {predictionType === 'location' && locations.length > 0 && (
-          <div className="control-group">
-            <label>📍 Select Location:</label>
-            <select value={selectedLocation} onChange={(e) => setSelectedLocation(e.target.value)}>
-              {locations.map(loc => (
-                <option key={loc.name} value={loc.name}>
-                  {loc.name} ({loc.record_count} records)
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {predictionType === 'location' && locations.length === 0 && (
-          <div className="warning-message">
-            ⚠️ No locations found. Add records with location names in Data Entry first.
-          </div>
-        )}
-
-        <button 
-          onClick={handlePredict} 
-          disabled={loading || (predictionType === 'location' && locations.length === 0)} 
-          className="predict-btn"
-        >
-          {loading ? '🔄 Predicting...' : '🔮 Predict'}
-        </button>
       </div>
 
-      {result && (
-        <div className="prediction-results">
-          {/* Date Prediction */}
-          {predictionType === 'date' && result && (
-            <div className="date-prediction">
-              <div className="result-card date-card">
-                <div className="result-header">
-                  <span className="result-icon">📅</span>
-                  <h3>Prediction for {result.date || selectedDate}</h3>
-                  {userRole === 'admin' && <span className="admin-badge-small">Admin View</span>}
-                </div>
-                <div className="result-main">
-                  <div className="catch-value">
-                    <span className="catch-number">{result.final_prediction || result.predicted_catch_kg || 0}</span>
-                    <span className="catch-unit">kg</span>
-                  </div>
-                  <div className="catch-cpue">
-                    CPUE: {((result.final_prediction || result.predicted_catch_kg || 0) / (result.effort_hours || effortHours)).toFixed(1)} kg/h
-                  </div>
-                </div>
-                <div className="result-info">
-                  <div className="info-row">
-                    <span>📆 {result.day_of_week || ''}, {result.month_name || ''} {result.year || ''}</span>
-                    <span>🍂 {result.season || getSeasonFromMonth(new Date(selectedDate).getMonth() + 1)} Season</span>
-                  </div>
-                  <div className="info-row">
-                    <span>⏱️ {result.effort_hours || effortHours} hours fishing</span>
-                    {result.is_weekend && <span className="weekend-badge">📈 Weekend Effect</span>}
-                  </div>
-                  {result.weather_conditions && (
-                    <div className="weather-info">
-                      <div className="weather-row">
-                        <span>{getWeatherIcon('temp', result.weather_conditions.temp)} {result.weather_conditions.temp}°C</span>
-                        <span>{getWeatherIcon('rain', result.weather_conditions.rain)} {result.weather_conditions.rain}mm rain</span>
-                        <span>{getWeatherIcon('wind', result.weather_conditions.wind)} {result.weather_conditions.wind}km/h wind</span>
-                      </div>
-                      <div className="weather-source">Source: {result.weather_conditions.source || 'NASA POWER'}</div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
+      <button onClick={handlePredict} disabled={loading} className="predict-btn">
+        {loading ? '🔄 Analyzing forecast...' : '🔮 Predict with Forecast'}
+      </button>
 
-          {/* Monthly Prediction */}
-          {predictionType === 'monthly' && result && result.predictions && (
-            <div className="monthly-prediction">
-              <div className="result-header">
-                <span className="result-icon">📊</span>
-                <h3>Monthly Forecast for {result.year || year}</h3>
-                {userRole === 'admin' && <span className="admin-badge-small">Organization-wide data</span>}
-                <p className="location-note">Based on weather at: {result.location || 'Your fishing location'}</p>
-              </div>
-              <div className="summary-stats">
-                <div className="stat">
-                  <span>📈 Average Monthly Catch:</span>
-                  <strong>{result.average_catch || 0} kg</strong>
-                </div>
-                <div className="stat">
-                  <span>📊 Total Yearly Catch:</span>
-                  <strong>{result.total_yearly_catch || 0} kg</strong>
-                </div>
-              </div>
-              
-              <div className="months-grid">
-                {result.predictions.map((month) => (
-                  <div 
-                    key={month.month} 
-                    className={`month-card ${month.is_highlighted ? 'highlighted' : ''} ${month.is_best_month ? 'best' : month.is_worst_month ? 'worst' : ''}`}
-                  >
-                    <div className="month-name">{month.month_name}</div>
-                    <div className="month-catch">{month.predicted_catch_kg || 0} kg</div>
-                    <div className="month-cpue">CPUE: {((month.predicted_catch_kg || 0) / (result.effort_hours || effortHours)).toFixed(1)} kg/h</div>
-                    <div className="month-conditions">
-                      <span>🌡️{month.temperature || 0}°</span>
-                      <span>💧{month.rainfall || 0}mm</span>
-                      <span>💨{month.wind_speed || 0}km/h</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+      {result && result.type === 'all' && (
+        <div className="all-locations-result">
+          <h3>📊 Predictions for {result.date}</h3>
+          
+          <div className="predictions-table">
+            <div className="table-header">
+              <div className="rank">#</div>
+              <div className="location">Location</div>
+              <div className="catch">Predicted Catch</div>
+              <div className="cpue">CPUE</div>
+              <div className="weather">Forecast</div>
+              <div className="confidence">Confidence</div>
             </div>
-          )}
-
-          {/* Yearly Prediction */}
-          {predictionType === 'yearly' && result && result.predictions && (
-            <div className="yearly-prediction">
-              <div className="result-header">
-                <span className="result-icon">📈</span>
-                <h3>Yearly Trend ({result.start_year || startYear} - {result.end_year || endYear})</h3>
-                {userRole === 'admin' && <span className="admin-badge-small">Organization trend</span>}
+            
+            {result.predictions.map((pred, idx) => (
+              <div key={pred.location} className={`table-row ${idx === 0 ? 'top-ranked' : ''}`}>
+                <div className="rank">#{idx + 1}</div>
+                <div className="location">{pred.location}</div>
+                <div className="catch">{pred.predicted_catch.toFixed(1)} kg</div>
+                <div className="cpue">{pred.cpue.toFixed(1)} kg/h</div>
+                <div className="weather">🌡️{pred.weather.temperature}° 💧{pred.weather.rainfall}mm</div>
+                <div className="confidence">{(pred.confidence * 100).toFixed(0)}%</div>
               </div>
-              <div className="trend-indicator">
-                <span className={`trend-badge ${result.trend || 'stable'}`}>
-                  {result.trend === 'increasing' ? '📈 Increasing Trend' : result.trend === 'decreasing' ? '📉 Decreasing Trend' : '📊 Stable Trend'}
-                </span>
-                {result.percent_change && (
-                  <span className="trend-percent">
-                    {result.percent_change > 0 ? '+' : ''}{result.percent_change}% change
-                  </span>
-                )}
-              </div>
-              
-              <div className="years-list">
-                {result.predictions.map((yearData) => (
-                  <div key={yearData.year} className="year-card">
-                    <div className="year">{yearData.year}</div>
-                    <div className="year-catch">{yearData.predicted_catch_kg || 0} kg</div>
-                    <div className="year-temp">🌡️ {yearData.temperature_trend || 'N/A'}°C</div>
-                    <div className="year-confidence">
-                      Confidence: {((yearData.confidence || 0.7) * 100).toFixed(0)}%
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Location Prediction */}
-          {predictionType === 'location' && result && (
-            <div className="location-prediction">
-              <div className="result-header">
-                <span className="result-icon">🌍</span>
-                <h3>Prediction for {result.location}</h3>
-                <p className="data-source">Based on {result.total_records || 0} historical records</p>
-              </div>
-              
-              <div className="location-result-card">
-                <div className="location-main">
-                  <div className="catch-value">
-                    <span className="catch-number">{result.predicted_catch_kg || 0}</span>
-                    <span className="catch-unit">kg</span>
-                  </div>
-                  <div className="catch-cpue">
-                    CPUE: {((result.predicted_catch_kg || 0) / (result.effort_hours || effortHours)).toFixed(1)} kg/h
-                  </div>
-                </div>
-                
-                <div className="location-stats">
-                  <div className="stat-item">
-                    <span className="stat-label">Historical Average:</span>
-                    <span className="stat-value">{result.historical_avg_catch || 0} kg</span>
-                  </div>
-                  <div className="stat-item">
-                    <span className="stat-label">Total Records:</span>
-                    <span className="stat-value">{result.total_records || 0}</span>
-                  </div>
-                  <div className="stat-item">
-                    <span className="stat-label">Confidence:</span>
-                    <span className="stat-value">{((result.confidence || 0.7) * 100).toFixed(0)}%</span>
-                  </div>
-                  <div className="stat-item">
-                    <span className="stat-label">Trend:</span>
-                    <span className={`stat-value trend-${result.trend || 'stable'}`}>
-                      {result.trend === 'increasing' ? '📈 Improving' : result.trend === 'decreasing' ? '📉 Declining' : '📊 Stable'}
-                      {result.trend_percent > 0 && ` (${result.trend_percent}%)`}
-                    </span>
-                  </div>
-                </div>
-                
-                <div className="location-weather">
-                  <h4>🌤️ Expected Weather for {result.month_name}</h4>
-                  <div className="weather-grid">
-                    <div className="weather-detail">
-                      <span className="weather-icon">🌡️</span>
-                      <span>{result.temperature || 0}°C</span>
-                    </div>
-                    <div className="weather-detail">
-                      <span className="weather-icon">💧</span>
-                      <span>{result.rainfall || 0}mm</span>
-                    </div>
-                    <div className="weather-detail">
-                      <span className="weather-icon">💨</span>
-                      <span>{result.wind_speed || 0}km/h</span>
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="location-recommendation">
-                  💡 <strong>Recommendation:</strong>
-                  {result.trend === 'increasing' 
-                    ? ` This location shows improving trends (${result.trend_percent}% increase). Good time to fish here!`
-                    : result.trend === 'decreasing'
-                    ? ` Catch rates are declining (${result.trend_percent}% decrease). Consider alternative locations.`
-                    : ` This location has stable catch rates. Reliable spot for fishing.`}
-                </div>
-              </div>
-            </div>
-          )}
+            ))}
+          </div>
         </div>
       )}
 
-      {!result && !loading && (
-        <div className="no-prediction">
-          <div className="no-data-icon">🔮</div>
-          <h3>Ready to Predict</h3>
-          <p>Select prediction type and click "Predict" to see results based on your REAL fishing data</p>
-          <p className="hint">💡 The more data you add, the more accurate predictions become!</p>
+      {result && result.type === 'specific' && result.data && (
+        <div className="specific-location-result">
+          <h3>📊 Prediction for {result.location} on {result.date}</h3>
+          
+          <div className="result-card">
+            <div className="result-main">
+              <div className="catch-value">
+                <span className="catch-number">{result.data.predicted_catch_kg.toFixed(1)}</span>
+                <span className="catch-unit">kg</span>
+              </div>
+              <div className="catch-cpue">CPUE: {result.data.cpue.toFixed(1)} kg/h</div>
+              <div className="confidence-badge">Confidence: {(result.data.confidence_score * 100).toFixed(0)}%</div>
+            </div>
+            
+            <div className="forecast-weather">
+              <h4>🌤️ Weather Forecast</h4>
+              <div className="weather-details">
+                <div className="weather-item">🌡️ {result.data.forecast_weather.temperature}°C</div>
+                <div className="weather-item">💧 {result.data.forecast_weather.rainfall}mm rain</div>
+                <div className="weather-item">💨 {result.data.forecast_weather.wind_speed}km/h wind</div>
+              </div>
+            </div>
+            
+            <div className="prediction-details">
+              <div className="detail-row">🎯 Method: {result.data.prediction_method}</div>
+              <div className="detail-row">📊 Similar conditions: {result.data.similar_conditions} records</div>
+            </div>
+            
+            <div className="trend-analysis">
+              <h4>📈 Catch Trend</h4>
+              <div className={`trend-indicator ${result.data.trend?.direction}`}>
+                {result.data.trend?.direction === 'increasing' ? '📈 Increasing' :
+                 result.data.trend?.direction === 'decreasing' ? '📉 Decreasing' : '📊 Stable'}
+                {result.data.trend?.percent_change > 0 && ` (${result.data.trend.percent_change}% change)`}
+              </div>
+            </div>
+            
+            <div className="recommendation-box">
+              <div className="recommendation-icon">💡</div>
+              <div className="recommendation-text">{result.data.recommendation}</div>
+            </div>
+          </div>
         </div>
       )}
     </div>
